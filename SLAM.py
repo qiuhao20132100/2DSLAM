@@ -1,15 +1,34 @@
 import numpy as np
 import matplotlib.pyplot as plt; plt.ion()
-import time
 import os
 import cv2
 from IMUDataLoader import IMUData
 from LaserDataLoader import  LaserData
 from OdometryDataLoader import OdometryData
+from KinectDataLoader import KinectData
 import math
 import random
 from map_utils import mapCorrelation
 prefix = "data" + os.path.sep;
+
+def bodyToWorld3D(dataInBodyFrame, particlePosInWorldFrame):
+    robot_pose = particlePosInWorldFrame[0:2].reshape(-1, 1)
+    robot_pose_x = robot_pose[0]
+    robot_pose_y = robot_pose[1]
+    robot_pose[0] = robot_pose_y
+    robot_pose[1] = -robot_pose_x
+    robot_ori = particlePosInWorldFrame[2]
+    robot_pose = np.vstack((robot_pose, np.array([[0.127]])))
+    rotation_camera_body2world = np.array([[np.cos(robot_ori), -np.sin(robot_ori), 0],
+                                           [np.sin(robot_ori), np.cos(robot_ori), 0],
+                                           [0, 0, 1]])
+    transform_camera_body2world = np.hstack((rotation_camera_body2world, robot_pose))
+    transform_camera_body2world = np.vstack((transform_camera_body2world, np.array([[0, 0, 0, 1]])))
+    dataInWorldFrame = transform_camera_body2world.dot(dataInBodyFrame)
+    dataInWorldFrame_y = np.array(dataInWorldFrame[1,:])
+    dataInWorldFrame[1,:] = dataInWorldFrame[0,:]
+    dataInWorldFrame[0,:] = -dataInWorldFrame_y
+    return dataInWorldFrame
 
 def bodyToWorld(dataInBodyFrame, particlePosInWorldFrame):
     delta_Degree = particlePosInWorldFrame[2]
@@ -29,24 +48,23 @@ def initMap():
     MAP['sizey'] = int(np.ceil((MAP['ymax'] - MAP['ymin']) / MAP['res'] + 1))
     MAP['binaryMap'] = np.zeros((MAP['sizex'], MAP['sizey']), dtype=np.int8)# DATA TYPE: char or int8
     MAP['logMap'] = np.zeros((MAP['sizex'], MAP['sizey']), dtype=np.float64)
+    MAP['colorMap'] = np.zeros((MAP['sizex'], MAP['sizey'], 3), dtype=np.uint8)
     return MAP
 
 def drawMap(map, route, particleHistory):
     posMask = np.array(map > 0)
     negMask = np.array(map < 0)
     img = np.zeros(map.shape, dtype = np.uint8)
-    img[posMask] = 10
+    img[:,:] = map[:,:]
     img[negMask] = 30
     for point in route:
         if (point[0] >= 0 and point[0] < map.shape[0] and point[1] >= 0 and point[1] < map.shape[1]):
             img[point[0],point[1]] = 50
     for row in range(particleHistory.shape[0]):
         img[particleHistory[row][0], particleHistory[row][1]] = 70
-    plt.imshow(img)
     plt.imsave("map.png",img)
-    plt.show()
-    plt.waitforbuttonpress()
-
+    cv2.imshow('img',img)
+    cv2.waitKey()
 def mapping(particlePosInPhy, scanXPosInPhyInBodyFrame, scanYPosInPhyInBodyFrame, MAP):
     scanXPosInPhyInWorldFrame, scanYPosInPhyInWorldFrame = bodyToWorld(np.array([scanXPosInPhyInBodyFrame,scanYPosInPhyInBodyFrame]), particlePosInPhy)
 
@@ -56,7 +74,7 @@ def mapping(particlePosInPhy, scanXPosInPhyInBodyFrame, scanYPosInPhyInBodyFrame
     particleAndScanYPosInGrid = (np.ceil((particleAndScanYPosInPhy - MAP['ymin']) / MAP['res']).astype(np.int16) - 1)
     particleAndScanXPosInGrid[particleAndScanXPosInGrid >= MAP['sizex']] = MAP['sizex'] - 1
     particleAndScanXPosInGrid[particleAndScanXPosInGrid < 0] = 0
-    particleAndScanYPosInGrid[particleAndScanYPosInGrid >= MAP['sizex']] = MAP['sizex'] - 1
+    particleAndScanYPosInGrid[particleAndScanYPosInGrid >= MAP['sizey']] = MAP['sizey'] - 1
     particleAndScanYPosInGrid[particleAndScanYPosInGrid < 0] = 0
 
     MAP['logMap'][particleAndScanXPosInGrid[0:len(particleAndScanXPosInGrid - 1)], particleAndScanYPosInGrid[0:len(particleAndScanYPosInGrid - 1)]] += 2 * np.log(4)
@@ -121,13 +139,30 @@ def resample(N, weight, particles):
 
     return particle_New
 
+def mapRGBToColorMap(MAP, rgb, depth, posInWorld):
+    pixelXPosInGrid = (np.ceil((posInWorld[0,:] - MAP['xmin']) / MAP['res']).astype(np.int16) - 1)
+    pixelYPosInGrid = (np.ceil((posInWorld[1,:] - MAP['ymin']) / MAP['res']).astype(np.int16) - 1)
+    pixelXPosInGrid[pixelXPosInGrid >= MAP['sizex']] = MAP['sizex'] - 1
+    pixelXPosInGrid[pixelXPosInGrid < 0] = 0
+    pixelYPosInGrid[pixelYPosInGrid >= MAP['sizey']] = MAP['sizey'] - 1
+    pixelYPosInGrid[pixelYPosInGrid < 0] = 0
+    pixelXPosInGrid = pixelXPosInGrid.reshape((rgb.shape[0], rgb.shape[1]))
+    pixelYPosInGrid = pixelYPosInGrid.reshape((rgb.shape[0], rgb.shape[1]))
+    pixelZPosInPhy = posInWorld[2,:].reshape((rgb.shape[0], rgb.shape[1]))
+    depth = depth.reshape(( rgb.shape[0], rgb.shape[1]))
+    for row in range(rgb.shape[0]):
+        for col in range(rgb.shape[1]):
+            if (depth[row,col] > 0 and abs(pixelZPosInPhy[row][col]) < 2):
+                MAP['colorMap'][pixelXPosInGrid[row][col]][pixelYPosInGrid[row][col]] = rgb[row][col]
+    return
+
 if __name__ == '__main__':
 
-    dataSet = 21
+    dataSet = 20
     numOfParticles = 100
     Threshold = 35
-    noiseFactor = np.array([10, 10, 1])
-
+    noiseFactor = np.array([1, 1, 1])
+    needTexture = True
 
     #set parameters
     particles = np.zeros((numOfParticles, 3))
@@ -135,6 +170,8 @@ if __name__ == '__main__':
     yawData = IMUData(prefix + "Imu"+ str(dataSet) + ".npz")
     encoderData = OdometryData(prefix + "Encoders"+ str(dataSet) + ".npz")
     scanData = LaserData(prefix + "Hokuyo"+ str(dataSet) + ".npz")
+    if needTexture:
+        rgbdData = KinectData(prefix + "dataRGBD" + os.path.sep, dataSet)
     MAP = initMap()
 
     xPhy = np.arange(MAP['xmin'], MAP['xmax'] + MAP['res'], MAP['res'])  # x-positions of each pixel of the map
@@ -193,6 +230,7 @@ if __name__ == '__main__':
         routeY = (np.ceil((particles[bestParticleIndex][1] - MAP['ymin']) / MAP['res']).astype(np.int16) - 1)
         route.append([routeX, routeY])
         if encoderCounter % 100 == 0:
+            break
             particlesX = (np.ceil((particles[:,0] - MAP['xmin']) / MAP['res']).astype(np.int16) - 1)
             particlesY = (np.ceil((particles[:,1] - MAP['xmin']) / MAP['res']).astype(np.int16) - 1)
             particlesXY = np.stack((particlesX, particlesY)).T
@@ -201,6 +239,15 @@ if __name__ == '__main__':
             print(weight)
 
 
+        #texture
+        if needTexture:
+            rgb = rgbdData.getOneRGBDataByTime(time)
+            disparity = rgbdData.getOneDisparityDataByTime(time)
+            depth = rgbdData.getDepth(rgb, disparity)
+            posInBody = rgbdData.convertOToBody(depth)
+            posInWorld = bodyToWorld3D(posInBody, particles[bestParticleIndex])
+            mapRGBToColorMap(MAP, rgb, depth, posInWorld)
+
         # resample particles if necessary
         N_eff = 1 / np.sum(np.square(weight))
         if N_eff <Threshold:
@@ -208,6 +255,7 @@ if __name__ == '__main__':
             weight = 1.0 / numOfParticles * np.ones((numOfParticles), dtype=np.float64)
 
 
-    # plt.show()
-    # plt.waitforbuttonpress()
     drawMap(MAP['logMap'],route, particlesHistory)
+    cv2.imshow('wtf',MAP['colorMap'])
+    cv2.waitKey()
+

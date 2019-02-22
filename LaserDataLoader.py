@@ -3,7 +3,7 @@ import numpy as np
 class LaserData(object):
 
     def __init__(self, address):
-        self.lidarPosToRobot = np.array([0, 514.35 / 10000, (298.33 - 330.20 / 2) / 10000])
+        self.lidarPosToRobot = np.array([0, (298.33 - 330.20 / 2) / 1000, 514.35 / 1000])
         with np.load(address) as data:
             self.lidar_angle_min = data["angle_min"]  # start angle of the scan [rad]
             self.lidar_angle_max = data["angle_max"]  # end angle of the scan [rad]

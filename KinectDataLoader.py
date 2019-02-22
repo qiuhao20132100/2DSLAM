@@ -2,6 +2,8 @@ import numpy as np
 import os
 import cv2
 from PIL import Image
+import math
+
 class KinectData(object):
     def __init__(self, prefix, dataSet):
         with np.load(prefix + ("Kinect%d.npz" % dataSet)) as data:
@@ -13,12 +15,63 @@ class KinectData(object):
         self.currDisparityIndex = 0
         self.dataSet = dataSet
         shape = self.getOneDisparityDataByTime(0).shape
-        self.indexMap = np.zeros((2, shape[0], shape[1]))
-        for row in range(shape[0]):
-            for col in range(shape[1]):
-                self.indexMap[0,row,col] = row
-                self.indexMap[1,row,col] = col
+        self.indexMap = np.array(np.meshgrid(np.arange(0, shape[1]), np.arange(0, shape[0])))
 
+
+
+        self.calibrationInv = np.linalg.inv(np.array([[585.05108211,0,242.94140713],
+                                                      [0,585.05108211,315.83800193],
+                                                      [0,0,1]]))
+        # print(self.indexMap[0][0:10])
+        pixelIndex = np.stack((self.indexMap[1], self.indexMap[0], np.ones(self.indexMap[0].shape)), axis = 2).reshape(-1,3)
+        pixelIndex = np.swapaxes(pixelIndex,0,1)
+        # print(pixelIndex.shape)
+        self.pixelIndexMultipleCalibrationInv = self.calibrationInv.dot(pixelIndex)
+        # print(self.pixelIndexMultipleCalibrationInv.shape)
+
+
+        self.RocOneInv = np.array([[0, 0, 1, 0],
+                                   [-1, 0, 0, 0],
+                                   [0, -1, 0, 0],
+                                   [0, 0, 0, 1]])
+
+        self.camera_position = np.array([0.18, 0.005, 0.36])
+        camera_rpy = np.array([0.0, 0.36, 0.021])  # rad
+        rotation_camera_cam2body_yaw = np.array([[np.cos(0.021), -np.sin(0.021), 0],
+                                                      [np.sin(0.021), np.cos(0.021), 0],
+                                                      [0, 0, 1]])
+
+        rotation_camera_cam2body_pitch = np.array([[np.cos(0.36), 0, np.sin(0.36)],
+                                                        [0, 1, 0],
+                                                        [-np.sin(0.36), 0, np.cos(0.36)]])
+
+        rotation_camera_cam2body_roll = np.array([[1, 0, 0],
+                                                  [0, 1, 0],
+                                                  [0, 0, 1]])
+
+        self.rotation_camera_cam2body = np.dot(np.dot(rotation_camera_cam2body_yaw,
+                                                      rotation_camera_cam2body_pitch),
+                                               rotation_camera_cam2body_roll)
+        self.transform_cam2body = np.hstack((self.rotation_camera_cam2body, self.camera_position.reshape(-1, 1)))
+        self.transform_cam2body = np.vstack((self.transform_cam2body, np.array([[0, 0, 0, 1]])))
+        # print(self.transform_cam2body)
+
+        # direction = [-1,0,0]
+        # angle = 0.36
+        # q = [math.cos(angle / 2), math.sin(angle / 2) * direction[0],
+        #      math.sin(angle / 2) * direction[1], math.sin(angle / 2) * direction[2]]
+        # hat = np.array([
+        #                 [0, -q[3], q[2]],
+        #                 [q[3], 0, -q[1]],
+        #                 [-q[2], q[1], 0]
+        #                                 ])
+        # qv = np.array(q[1:4]).reshape(3,1)
+        # Eq = np.concatenate((qv, np.identity(3) * q[0] + hat), axis = 1)
+        # Gq = np.concatenate((qv, np.identity(3) * q[0] - hat), axis = 1)
+        # self.Rwc = Eq.dot(Gq.T)
+        # self.qwc = np.array([0.005, 0.18, 0.36]).reshape(3,1)
+        # self.R = np.concatenate((self.Rwc, self.qwc), axis = 1)
+        # self.R = np.concatenate((self.R, np.array([0,0,0,1]).reshape(1,4)))
 
     def reset(self):
         self.currRGBIndex = 0
@@ -61,25 +114,22 @@ class KinectData(object):
         img = Image.open(self.DisparityAddress + fileName)
         return np.array(img.getdata(), np.uint16).reshape(img.size[1], img.size[0])
 
-
-    def getDepthAndRGB(self, rgb, disparity):
+    def getDepth(self, rgb, disparity):
         # cv2.imshow('img',rgb)
         # cv2.waitKey()
         ddisparity = (-0.00304 * disparity + 3.31)
         depth = 1.03 / ddisparity
-        rgbIndexI = np.ceil((self.indexMap[0] * 526.37 + depth * ((-4.5) * 1750.46) + 19276.0) / 585.051).astype(np.int32)
-        rgbIndexJ = np.ceil((self.indexMap[1] * 526.37 + 16662.0) / 585.051).astype(np.int32)
-        index = np.stack((rgbIndexI, rgbIndexJ), axis = 2)
-        image = np.zeros(rgb.shape, dtype = np.uint8)
-        for row in range(index.shape[0]):
-            for col in range(index.shape[1]):
-                image[row,col] = rgb[rgbIndexI[row][col],rgbIndexJ[row][col]]
-        image[np.logical_or(
-            np.logical_or(
-                np.logical_or(rgbIndexJ < 0, rgbIndexJ >= index.shape[1]),
-                np.logical_or(rgbIndexI < 0, rgbIndexI >= index.shape[0])),
-            depth <= 0)
-        ] = [0, 0, 0]
+        rgbIndexI = np.round((self.indexMap[1] * 526.37 + ddisparity * (-4.5 * 1750.46) + 19276.0) / 585.051).astype(np.int32)
+        rgbIndexJ = np.round((self.indexMap[0] * 526.37 + 16662.0) / 585.051).astype(np.int32)
+        # index = np.stack((rgbIndexI, rgbIndexJ), axis = 2)
+        depthAssignedToRGB = np.zeros(rgb.shape[0:2])
+
+        for row in range(rgbIndexI.shape[0]):
+            for col in range(rgbIndexI.shape[1]):
+                if (rgbIndexI[row][col] >= 0 and rgbIndexI[row][col] < rgb.shape[0] and rgbIndexJ[row][col] >= 0 and rgbIndexJ[row][col] < rgb.shape[1]):
+                    depthAssignedToRGB[rgbIndexI[row][col], rgbIndexJ[row][col]] = depth[row, col]
+
+        depthAssignedToRGB[depthAssignedToRGB <= 0] = 0
         # cv2.rectangle(image, (380, 0), (400, 30), (0, 255, 0), 3)
         # print(depth[0:30,380:400])
         # checki = np.ceil((self.indexMap[0][0:30,380:400] * 526.37 + depth[0:30,380:400] * ((-4.5) * 1750.46) + 19276.0) / 585.051).astype(np.int32)
@@ -87,7 +137,18 @@ class KinectData(object):
         # print(checki)
         # cv2.imshow('image',image)
         # cv2.waitKey()
-        return image
+        return depthAssignedToRGB
+
+    def convertOToBody(self, depthAssignedToRGB):
+        Z = depthAssignedToRGB.reshape(1,-1)
+        tmp = self.pixelIndexMultipleCalibrationInv * Z
+        PostionInOptical = np.stack((tmp[0], tmp[1], tmp[2], np.ones(Z.shape[1])), axis=0)
+        PostionInOptical = self.transform_cam2body.dot(self.RocOneInv.dot(PostionInOptical))
+        # tmp = np.array(PostionInOptical[0,:])
+        # PostionInOptical[0, :] = -PostionInOptical[1, :]
+        # PostionInOptical[1, :] = tmp
+        return PostionInOptical
+
 if __name__ == '__main__':
     data = KinectData('data/dataRGBD/', 20)
     # print(data.DisparityAddress)
@@ -102,6 +163,10 @@ if __name__ == '__main__':
     # print(data.RGBStamps[0])
     image = data.getOneRGBDataByTime(0)
     disparity_img = data.getOneDisparityDataByTime(0)
-    mixImag = data.getDepthAndRGB(image, disparity_img)
-    cv2.imshow('img',mixImag)
-    cv2.waitKey()
+    depthAssignedToRGB = data.getDepth(image, disparity_img)
+    # cv2.imshow('img', image)
+    # cv2.waitKey()
+    # image[depthAssignedToRGB > 0] = [0,0,0]
+    # cv2.imshow('img', image)
+    # cv2.waitKey()
+    print(data.convertOToBody(depthAssignedToRGB).shape)
