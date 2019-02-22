@@ -9,26 +9,23 @@ from KinectDataLoader import KinectData
 import math
 import random
 from map_utils import mapCorrelation
+
 prefix = "data" + os.path.sep;
 
-def bodyToWorld3D(dataInBodyFrame, particlePosInWorldFrame):
-    robot_pose = particlePosInWorldFrame[0:2].reshape(-1, 1)
-    robot_pose_x = robot_pose[0]
-    robot_pose_y = robot_pose[1]
-    robot_pose[0] = robot_pose_y
-    robot_pose[1] = -robot_pose_x
-    robot_ori = particlePosInWorldFrame[2]
-    robot_pose = np.vstack((robot_pose, np.array([[0.127]])))
-    rotation_camera_body2world = np.array([[np.cos(robot_ori), -np.sin(robot_ori), 0],
-                                           [np.sin(robot_ori), np.cos(robot_ori), 0],
-                                           [0, 0, 1]])
-    transform_camera_body2world = np.hstack((rotation_camera_body2world, robot_pose))
-    transform_camera_body2world = np.vstack((transform_camera_body2world, np.array([[0, 0, 0, 1]])))
-    dataInWorldFrame = transform_camera_body2world.dot(dataInBodyFrame)
-    dataInWorldFrame_y = np.array(dataInWorldFrame[1,:])
-    dataInWorldFrame[1,:] = dataInWorldFrame[0,:]
-    dataInWorldFrame[0,:] = -dataInWorldFrame_y
-    return dataInWorldFrame
+def getTransFrombodyToWorld3D(particlePosInWorldFrame):
+    particle3DPos = np.array([0, 0, 0])
+    particle3DPos[0] = particlePosInWorldFrame[1]
+    particle3DPos[1] = -particlePosInWorldFrame[0]
+    particle3DPos[2] = 0.127
+    particle3DPos = particle3DPos.reshape((3, 1))
+    particlesOri = particlePosInWorldFrame[2]
+
+    rotationBody2World = np.array([[np.cos(particlesOri), -np.sin(particlesOri), 0],
+                                   [np.sin(particlesOri), np.cos(particlesOri), 0],
+                                   [0, 0, 1]])
+    transformBody2World = np.hstack((rotationBody2World, particle3DPos))
+    transformBody2World = np.vstack((transformBody2World, np.array([[0, 0, 0, 1]])))
+    return transformBody2World
 
 def bodyToWorld(dataInBodyFrame, particlePosInWorldFrame):
     delta_Degree = particlePosInWorldFrame[2]
@@ -51,20 +48,6 @@ def initMap():
     MAP['colorMap'] = np.zeros((MAP['sizex'], MAP['sizey'], 3), dtype=np.uint8)
     return MAP
 
-def drawMap(map, route, particleHistory):
-    posMask = np.array(map > 0)
-    negMask = np.array(map < 0)
-    img = np.zeros(map.shape, dtype = np.uint8)
-    img[:,:] = map[:,:]
-    img[negMask] = 30
-    for point in route:
-        if (point[0] >= 0 and point[0] < map.shape[0] and point[1] >= 0 and point[1] < map.shape[1]):
-            img[point[0],point[1]] = 50
-    for row in range(particleHistory.shape[0]):
-        img[particleHistory[row][0], particleHistory[row][1]] = 70
-    plt.imsave("map.png",img)
-    cv2.imshow('img',img)
-    cv2.waitKey()
 def mapping(particlePosInPhy, scanXPosInPhyInBodyFrame, scanYPosInPhyInBodyFrame, MAP):
     scanXPosInPhyInWorldFrame, scanYPosInPhyInWorldFrame = bodyToWorld(np.array([scanXPosInPhyInBodyFrame,scanYPosInPhyInBodyFrame]), particlePosInPhy)
 
@@ -139,30 +122,45 @@ def resample(N, weight, particles):
 
     return particle_New
 
-def mapRGBToColorMap(MAP, rgb, depth, posInWorld):
-    pixelXPosInGrid = (np.ceil((posInWorld[0,:] - MAP['xmin']) / MAP['res']).astype(np.int16) - 1)
-    pixelYPosInGrid = (np.ceil((posInWorld[1,:] - MAP['ymin']) / MAP['res']).astype(np.int16) - 1)
-    pixelXPosInGrid[pixelXPosInGrid >= MAP['sizex']] = MAP['sizex'] - 1
-    pixelXPosInGrid[pixelXPosInGrid < 0] = 0
-    pixelYPosInGrid[pixelYPosInGrid >= MAP['sizey']] = MAP['sizey'] - 1
-    pixelYPosInGrid[pixelYPosInGrid < 0] = 0
-    pixelXPosInGrid = pixelXPosInGrid.reshape((rgb.shape[0], rgb.shape[1]))
-    pixelYPosInGrid = pixelYPosInGrid.reshape((rgb.shape[0], rgb.shape[1]))
-    pixelZPosInPhy = posInWorld[2,:].reshape((rgb.shape[0], rgb.shape[1]))
-    depth = depth.reshape(( rgb.shape[0], rgb.shape[1]))
-    for row in range(rgb.shape[0]):
-        for col in range(rgb.shape[1]):
-            if (depth[row,col] > 0 and abs(pixelZPosInPhy[row][col]) < 2):
-                MAP['colorMap'][pixelXPosInGrid[row][col]][pixelYPosInGrid[row][col]] = rgb[row][col]
+def mapRGBToColorMap(MAP, rgb, positionWorld):
+    # transfer the data into grid
+    positionWorldXY = positionWorld[:, :2]
+    tmp = np.array(positionWorldXY[:, 0])
+    positionWorldXY[:, 0] = -positionWorldXY[:, 1]
+    positionWorldXY[:, 1] = tmp
+    pixelPosInGrid = np.ceil(
+        (positionWorldXY.T - np.array([MAP['xmin'], MAP['ymin']]).reshape(2, 1)) / MAP['res']).astype(np.int32) - 1
+    pixelPosInGrid[0, :][pixelPosInGrid[0, :] < 0] = 0
+    pixelPosInGrid[0, :][pixelPosInGrid[0, :] >= MAP['colorMap'].shape[0]] = MAP['colorMap'].shape[0] - 1
+    pixelPosInGrid[1, :][pixelPosInGrid[1, :] < 0] = 0
+    pixelPosInGrid[1, :][pixelPosInGrid[1, :] >= MAP['colorMap'].shape[1]] = MAP['colorMap'].shape[1] - 1
+
+    MAP['colorMap'][pixelPosInGrid[0, :], pixelPosInGrid[1, :], :] = rgb[rgbj, rgbi, :]
     return
+
+def drawMap(map, route, particleHistory):
+    posMask = np.array(map > 0)
+    negMask = np.array(map < 0)
+    img = np.zeros(map.shape, dtype = np.uint8)
+    img[:,:] = map[:,:]
+    img[negMask] = 30
+    for point in route:
+        if (point[0] >= 0 and point[0] < map.shape[0] and point[1] >= 0 and point[1] < map.shape[1]):
+            img[point[0],point[1]] = 50
+    for row in range(particleHistory.shape[0]):
+        img[particleHistory[row][0], particleHistory[row][1]] = 70
+    plt.imsave("map.png",img)
+    cv2.imshow('img',img)
+    cv2.waitKey()
 
 if __name__ == '__main__':
 
     dataSet = 20
-    numOfParticles = 100
-    Threshold = 35
+    numOfParticles = 1
+    Threshold = 0
     noiseFactor = np.array([1, 1, 1])
     needTexture = True
+    height_threshold = [-2, 0.25]
 
     #set parameters
     particles = np.zeros((numOfParticles, 3))
@@ -191,14 +189,15 @@ if __name__ == '__main__':
 
     encoderCounter = 0
     while indexOfScan < scanData.length and indexOfEncoder < encoderData.length:
-        # print("looping")
+
         while (indexOfEncoder < encoderData.length and encoderData.encoder_stamps[indexOfEncoder] < time):
             indexOfEncoder += 1
         if (indexOfEncoder == encoderData.length):
             break
+
+
         # prediction
         encoderCounter += 1
-
         time = encoderData.encoder_stamps[indexOfEncoder]
         yaw = yawData.getOneYawDataByTime(time)
         dis = ((encoderData.encoder_counts[indexOfEncoder][0] + encoderData.encoder_counts[indexOfEncoder][2]) / 2.0 * 0.0022 + \
@@ -206,22 +205,25 @@ if __name__ == '__main__':
         delta_t = time - pre_encoder_time
         posUpdate = motionModel(dis, delta_t, yaw, particles)
         noise = np.einsum('..., ...', noiseFactor, np.random.normal(0, 1e-3, (numOfParticles, 1)))
-        particles = particles + posUpdate + noise
-        # plt.scatter(particles[:,0], particles[:,1])
+        particles = particles + posUpdate #+ noise
         pre_encoder_time = time
+
+
 
         while(indexOfScan < scanData.length and scanData.lidar_stamps[indexOfScan] < time):
             indexOfScan += 1
         if (indexOfScan == scanData.length):
             break
-
         time = scanData.lidar_stamps[indexOfScan]
+
+
         # update step
         currScanData = scanData.convertFromLaserFrameToBodyFrame3D(scanData.getOneLidarDataAfterMask(indexOfScan))
         MAP['binaryMap'] = np.zeros(MAP['logMap'].shape)
         MAP['binaryMap'][MAP['logMap'] > 0] = 1
-        # bestParticleIndex = 0
         particles, weight, bestParticleIndex = update(numOfParticles, currScanData, particles, xPhy, yPhy, x_range, y_range, weight, MAP['binaryMap'])
+
+
         # mapping
         mapping(particles[bestParticleIndex], currScanData[:,0], currScanData[:,1], MAP)
 
@@ -230,23 +232,39 @@ if __name__ == '__main__':
         routeY = (np.ceil((particles[bestParticleIndex][1] - MAP['ymin']) / MAP['res']).astype(np.int16) - 1)
         route.append([routeX, routeY])
         if encoderCounter % 100 == 0:
-            break
+            print("round:" + str(encoderCounter))
+            if (encoderCounter >= 500):
+                break
             particlesX = (np.ceil((particles[:,0] - MAP['xmin']) / MAP['res']).astype(np.int16) - 1)
             particlesY = (np.ceil((particles[:,1] - MAP['xmin']) / MAP['res']).astype(np.int16) - 1)
             particlesXY = np.stack((particlesX, particlesY)).T
             particlesHistory = np.concatenate((particlesHistory,particlesXY))
-            print(particles)
-            print(weight)
 
 
         #texture
         if needTexture:
+            #get data
             rgb = rgbdData.getOneRGBDataByTime(time)
             disparity = rgbdData.getOneDisparityDataByTime(time)
-            depth = rgbdData.getDepth(rgb, disparity)
-            posInBody = rgbdData.convertOToBody(depth)
-            posInWorld = bodyToWorld3D(posInBody, particles[bestParticleIndex])
-            mapRGBToColorMap(MAP, rgb, depth, posInWorld)
+            #calculate rgbIndex and depth
+            depth, rgbi, rgbj = rgbdData.getDepthAndIndex(rgb, disparity)
+            #transfer from pixel position to camera position
+            pixels = np.vstack((rgbi.reshape(1, -1), rgbj.reshape(1, -1), np.ones_like(rgbi.reshape(1, -1))))
+            positionCamera = rgbdData.convertPixelToBody(pixels, depth)
+            #transfer from camera to world
+            #the transfer between camera and body is fixed
+            #we only need to calculate the transfer between body and world
+            transformBody2World = getTransFrombodyToWorld3D(particles[bestParticleIndex])
+            positionWorld = np.dot(np.dot(transformBody2World,rgbdData.transfromCamToBody),positionCamera).T  # num_pixels * 4
+
+            #get mask by height Threshold and filter the data
+            pixelOnTheGroundMask = np.logical_and(positionWorld[:, 2] >= height_threshold[0], positionWorld[:, 2] <= height_threshold[1])
+            positionWorld = positionWorld[pixelOnTheGroundMask, :]
+            rgbi = rgbi[pixelOnTheGroundMask]
+            rgbj = rgbj[pixelOnTheGroundMask]
+            #draw
+            mapRGBToColorMap(MAP, rgb, positionWorld)
+
 
         # resample particles if necessary
         N_eff = 1 / np.sum(np.square(weight))
@@ -256,6 +274,7 @@ if __name__ == '__main__':
 
 
     drawMap(MAP['logMap'],route, particlesHistory)
+    plt.imsave("colorMap.png", MAP['colorMap'])
     cv2.imshow('wtf',MAP['colorMap'])
     cv2.waitKey()
 
