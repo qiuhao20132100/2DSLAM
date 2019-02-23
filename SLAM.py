@@ -94,6 +94,27 @@ def mapping(particlePosInPhy, scanXPosInPhyInBodyFrame, scanYPosInPhyInBodyFrame
     MAP['logMap'] += polygon
 
 def update(scanInPhyInBodyFrame, particles, x_range, y_range, weight, MAP):
+    #particles shape : n x 3
+    scanXYPosInPhyInWorldFrame = bodyToWorld(scanInPhyInBodyFrame, particles)
+    #(N, 2, 100)
+    scanXYPosInGridInWorldFrame = np.ceil((scanXYPosInPhyInWorldFrame.T - np.array([MAP['xmin'], MAP['ymin']]).reshape(1, 2, 1)) / MAP['res']).astype(np.int32) - 1
+    correlationMatrix = map_correlation_mat_version(scanXYPosInGridInWorldFrame, MAP, np.ceil(x_range / MAP['res']).astype(np.int32), np.ceil(y_range / MAP['res']).astype(np.int32))# (100, 81)
+    corr_maxs = np.max(correlationMatrix, axis=1)
+    corr_maxs_ind = np.argmax(correlationMatrix, axis=1)
+
+    corr_X_update = x_range[corr_maxs_ind % x_range.shape[0]]
+    corr_Y_update = y_range[corr_maxs_ind // y_range.shape[0]]
+    particles[:,0] = corr_X_update + particles[:,0]
+    particles[:,1] = corr_Y_update + particles[:,1]
+
+    corr_maxmax = corr_maxs[np.argmax(corr_maxs)]
+    weightSum = np.log(weight) + corr_maxs - corr_maxmax
+    normalize = np.log(np.sum(np.exp(weightSum)))
+    weightSum = weightSum - normalize
+
+    wei_update = np.exp(weightSum)
+    ind_target = wei_update.argmax()
+    return particles, wei_update, ind_target
     psave = np.array(particles)
     weightSave = np.array(weight)
 
@@ -192,6 +213,11 @@ def drawMap(map, route, particleHistory, index):
     # cv2.imshow('img',img)
     # cv2.waitKey()
 
+def mixColorMapAndLogMap(MAP):
+    MAP['colorMap'][np.logical_and(MAP['logMap'] < - 3 * math.log(4), (MAP['colorMap'] == np.array([0,0,0]))[:,:,0])] = np.array([120, 120, 120])
+    MAP['colorMap'][MAP['logMap'] == 0] = np.array([0,0,0])
+    MAP['colorMap'][MAP['logMap'] > 3 * math.log(4)] = np.array([255, 255, 255])
+
 def map_correlation_mat_version( vp, MAP, xs=np.arange(-4, 5), ys=np.arange(-4, 5)):
     """
     :param vp: 2*1081*100, represent xy, angle, state_n
@@ -211,14 +237,11 @@ def map_correlation_mat_version( vp, MAP, xs=np.arange(-4, 5), ys=np.arange(-4, 
     y_change, x_change = np.where(np.ones((ys.shape[0], xs.shape[0])) == 1)
     x_change = (x_change + xs[0]).astype(np.int32)
     y_change = (y_change + ys[0]).astype(np.int32)
-    # print(np.max(x_vp))
-    # print(x_vp.shape)
+
     x_vp = np.dot(x_vp, np.ones((1, x_change.shape[0]), dtype=np.int32)) + x_change.reshape(1, -1)
     y_vp = np.dot(y_vp, np.ones((1, y_change.shape[0]), dtype=np.int32)) + y_change.reshape(1, -1)
-    # print(np.max(x_vp))
     flag = np.logical_and(np.logical_and(x_vp >= 0, x_vp < MAP['sizex']),
                           np.logical_and(y_vp >= 0, y_vp < MAP['sizey']))
-    # print(flag.any())
     x_vp[np.logical_not(flag)] = 0
     y_vp[np.logical_not(flag)] = 0
 
@@ -226,19 +249,22 @@ def map_correlation_mat_version( vp, MAP, xs=np.arange(-4, 5), ys=np.arange(-4, 
     img_extract[np.logical_not(flag)] = 0
 
     img_extract = img_extract.reshape(x_vp_shape[0], x_vp_shape[1], -1)  # (1081, 100, 81)
-    # print(img_extract.shape)
+    # corr_weight = np.power(ranges, 2)
+    # img_extract = img_extract * corr_weight.reshape(ranges.shape[0], 1, 1)
     img_extract = np.sum(img_extract, axis=0)  # (100, 81)
 
     return img_extract
 
 if __name__ == '__main__':
 
-    dataSet = 20
+    dataSet = 21
     numOfParticles = 100
     Threshold = 35
     noiseFactor = np.array([1, 1, 10])
     needTexture = False
-    height_threshold = [-2, 0.25]
+    height_threshold = [-2, 0.2]
+
+
 
     #set parameters
     particles = np.zeros((numOfParticles, 3))
@@ -284,8 +310,9 @@ if __name__ == '__main__':
         # prediction
         time = encoderData.encoder_stamps[indexOfEncoder]
         yaw = yawData.getOneYawDataByTime(time)
-        dis = ((encoderData.encoder_counts[indexOfEncoder][0] + encoderData.encoder_counts[indexOfEncoder][2]) / 2.0 * 0.0022 + \
-               (encoderData.encoder_counts[indexOfEncoder][1] + encoderData.encoder_counts[indexOfEncoder][3]) / 2.0 * 0.0022) / 2.0
+        # dis = ((encoderData.encoder_counts[indexOfEncoder][0] + encoderData.encoder_counts[indexOfEncoder][2]) / 2.0 * 0.0022 + \
+        #        (encoderData.encoder_counts[indexOfEncoder][1] + encoderData.encoder_counts[indexOfEncoder][3]) / 2.0 * 0.0022) / 2.0
+        dis = np.mean(encoderData.encoder_counts[indexOfEncoder][:]) * 0.0022
         delta_t = time - pre_encoder_time
         posUpdate = motionModel(dis, delta_t, yaw, particles)
         noise = np.einsum('..., ...', noiseFactor, np.random.normal(0, 1e-3, (numOfParticles, 1)))
@@ -303,6 +330,11 @@ if __name__ == '__main__':
         # mapping
         mapping(particles[bestParticleIndex], currScanData[:,0], currScanData[:,1], MAP)
 
+        # if (indexOfEncoder / 100 >= 31 and indexOfEncoder / 100 <= 32):
+        #     MAPdebug = initMap()
+        #     mapping(particles[bestParticleIndex], currScanData[:, 0], currScanData[:, 1], MAPdebug)
+        #     drawMap(MAPdebug['logMap'], route, particlesHistory, indexOfEncoder)
+
         #print map
         routeX = (np.ceil((particles[bestParticleIndex][0] - MAP['xmin']) / MAP['res']).astype(np.int16) - 1)
         routeY = (np.ceil((particles[bestParticleIndex][1] - MAP['ymin']) / MAP['res']).astype(np.int16) - 1)
@@ -318,7 +350,6 @@ if __name__ == '__main__':
 
 
         #texture
-
         if needTexture:
             #get data
             rgb = rgbdData.getOneRGBDataByTime(time)
@@ -349,6 +380,7 @@ if __name__ == '__main__':
             weight = 1.0 / numOfParticles * np.ones((numOfParticles), dtype=np.float64)
 
     drawMap(MAP['logMap'],route, particlesHistory, "final")
+    mixColorMapAndLogMap(MAP)
     plt.imsave("colorMap.png", MAP['colorMap'])
     cv2.imshow('wtf',MAP['colorMap'])
     cv2.waitKey()

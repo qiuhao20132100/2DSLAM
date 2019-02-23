@@ -17,11 +17,14 @@ class LaserData(object):
             allY = np.cos(degrees) * self.lidar_ranges
             allZ = np.zeros(allX.shape)
             self.data = np.swapaxes(np.array([allX, allY, allZ]), 0, 1)
-            self.mask = (np.array([self.lidar_ranges <= self.lidar_range_max[()]]) & np.array([ self.lidar_ranges >= self.lidar_range_min[()]])).reshape(self.data.shape[0], -1)
+            # self.mask = (np.array([self.lidar_ranges <= self.lidar_range_max[()]]) & np.array([ self.lidar_ranges >= self.lidar_range_min[()]])).reshape(self.data.shape[0], -1)
+            self.mask = np.logical_and(self.lidar_ranges <= self.lidar_range_max[()], self.lidar_ranges >= self.lidar_range_min[()]).reshape(self.data.shape[0], -1)
             self.length = len(self.lidar_stamps)
             self.currIndex = 0
     def getOneLidarDataAfterMask(self, index):
         tmpData = self.data[index].T
+        tmpRange = self.lidar_ranges[index].T
+        # return tmpData[self.mask[index]], tmpRange[self.mask[index]]
         return tmpData[self.mask[index]]
     def reset(self):
         self.currIndex = 0
