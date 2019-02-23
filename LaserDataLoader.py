@@ -19,9 +19,26 @@ class LaserData(object):
             self.data = np.swapaxes(np.array([allX, allY, allZ]), 0, 1)
             self.mask = (np.array([self.lidar_ranges <= self.lidar_range_max[()]]) & np.array([ self.lidar_ranges >= self.lidar_range_min[()]])).reshape(self.data.shape[0], -1)
             self.length = len(self.lidar_stamps)
+            self.currIndex = 0
     def getOneLidarDataAfterMask(self, index):
         tmpData = self.data[index].T
         return tmpData[self.mask[index]]
+    def reset(self):
+        self.currIndex = 0
+    def getOneLidarDataAfterMaskByTime(self, time):
+        while (self.currIndex < len(self.lidar_stamps) and self.lidar_stamps[self.currIndex] < time):
+            self.currIndex += 1
+
+        if (self.currIndex == len(self.lidar_stamps)):
+            return self.getOneLidarDataAfterMask(len(self.lidar_stamps) - 1)
+        elif self.currIndex == 0:
+            return self.getOneLidarDataAfterMask(0)
+        else:
+            if (abs(self.lidar_stamps[self.currIndex] - time) < abs(self.lidar_stamps[self.currIndex - 1] - time)):
+                return self.getOneLidarDataAfterMask(self.currIndex)
+            else:
+                return self.getOneLidarDataAfterMask(self.currIndex - 1)
+
     def convertFromLaserFrameToBodyFrame3D(self, oneLaserDataInLaserFrame):
         return oneLaserDataInLaserFrame + self.lidarPosToRobot
     def convertFromLaserFrameToBodyFrame2D(self, oneLaserDataInLaserFrame):
