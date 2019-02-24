@@ -23,9 +23,12 @@ class LaserData(object):
             self.currIndex = 0
     def getOneLidarDataAfterMask(self, index):
         tmpData = self.data[index].T
-        tmpRange = self.lidar_ranges[index].T
-        # return tmpData[self.mask[index]], tmpRange[self.mask[index]]
         return tmpData[self.mask[index]]
+    def getOneLidarDataWithRangeAfterMask(self, index):
+        tmpData = self.data[index].T
+        tmpRange = self.lidar_ranges[index].T
+        return tmpData[self.mask[index]], tmpRange[self.mask[index]]
+        # return tmpData[self.mask[index]]
     def reset(self):
         self.currIndex = 0
     def getOneLidarDataAfterMaskByTime(self, time):
@@ -33,14 +36,14 @@ class LaserData(object):
             self.currIndex += 1
 
         if (self.currIndex == len(self.lidar_stamps)):
-            return self.getOneLidarDataAfterMask(len(self.lidar_stamps) - 1)
+            return self.getOneLidarDataWithRangeAfterMask(len(self.lidar_stamps) - 1)
         elif self.currIndex == 0:
-            return self.getOneLidarDataAfterMask(0)
+            return self.getOneLidarDataWithRangeAfterMask(0)
         else:
             if (abs(self.lidar_stamps[self.currIndex] - time) < abs(self.lidar_stamps[self.currIndex - 1] - time)):
-                return self.getOneLidarDataAfterMask(self.currIndex)
+                return self.getOneLidarDataWithRangeAfterMask(self.currIndex)
             else:
-                return self.getOneLidarDataAfterMask(self.currIndex - 1)
+                return self.getOneLidarDataWithRangeAfterMask(self.currIndex - 1)
 
     def convertFromLaserFrameToBodyFrame3D(self, oneLaserDataInLaserFrame):
         return oneLaserDataInLaserFrame + self.lidarPosToRobot

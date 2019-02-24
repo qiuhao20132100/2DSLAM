@@ -93,12 +93,12 @@ def mapping(particlePosInPhy, scanXPosInPhyInBodyFrame, scanYPosInPhyInBodyFrame
     cv2.drawContours(image = polygon, contours = ctr, contourIdx = 0, color = np.log(0.25), thickness = -1)
     MAP['logMap'] += polygon
 
-def update(scanInPhyInBodyFrame, particles, x_range, y_range, weight, MAP):
+def update(scanInPhyInBodyFrame, ranges, particles, x_range, y_range, weight, MAP):
     #particles shape : n x 3
     scanXYPosInPhyInWorldFrame = bodyToWorld(scanInPhyInBodyFrame, particles)
     #(N, 2, 100)
     scanXYPosInGridInWorldFrame = np.ceil((scanXYPosInPhyInWorldFrame.T - np.array([MAP['xmin'], MAP['ymin']]).reshape(1, 2, 1)) / MAP['res']).astype(np.int32) - 1
-    correlationMatrix = map_correlation_mat_version(scanXYPosInGridInWorldFrame, MAP, np.ceil(x_range / MAP['res']).astype(np.int32), np.ceil(y_range / MAP['res']).astype(np.int32))# (100, 81)
+    correlationMatrix = map_correlation_mat_version(scanXYPosInGridInWorldFrame, MAP, ranges, np.ceil(x_range / MAP['res']).astype(np.int32), np.ceil(y_range / MAP['res']).astype(np.int32))# (100, 81)
     corr_maxs = np.max(correlationMatrix, axis=1)
     corr_maxs_ind = np.argmax(correlationMatrix, axis=1)
 
@@ -139,7 +139,6 @@ def update(scanInPhyInBodyFrame, particles, x_range, y_range, weight, MAP):
     wei_update = np.exp(weightSum)
     ind_target = wei_update.argmax()
     return particles, wei_update, ind_target
-    # return psave, weightSave, 0
 
 def motionModel(dis, delta_t, yaw, particles):
     particleOri = particles[:,2]
@@ -218,7 +217,7 @@ def mixColorMapAndLogMap(MAP):
     MAP['colorMap'][MAP['logMap'] == 0] = np.array([0,0,0])
     MAP['colorMap'][MAP['logMap'] > 3 * math.log(4)] = np.array([255, 255, 255])
 
-def map_correlation_mat_version( vp, MAP, xs=np.arange(-4, 5), ys=np.arange(-4, 5)):
+def map_correlation_mat_version( vp, MAP, ranges, xs=np.arange(-4, 5), ys=np.arange(-4, 5)):
     """
     :param vp: 2*1081*100, represent xy, angle, state_n
     :param xs: x shift, a numpy array, arange from left shift to right shift np.arange(-4, 5)
@@ -249,8 +248,8 @@ def map_correlation_mat_version( vp, MAP, xs=np.arange(-4, 5), ys=np.arange(-4, 
     img_extract[np.logical_not(flag)] = 0
 
     img_extract = img_extract.reshape(x_vp_shape[0], x_vp_shape[1], -1)  # (1081, 100, 81)
-    # corr_weight = np.power(ranges, 2)
-    # img_extract = img_extract * corr_weight.reshape(ranges.shape[0], 1, 1)
+    corr_weight = np.power(ranges, 0.5)
+    img_extract = img_extract * corr_weight.reshape(ranges.shape[0], 1, 1)
     img_extract = np.sum(img_extract, axis=0)  # (100, 81)
 
     return img_extract
@@ -310,8 +309,6 @@ if __name__ == '__main__':
         # prediction
         time = encoderData.encoder_stamps[indexOfEncoder]
         yaw = yawData.getOneYawDataByTime(time)
-        # dis = ((encoderData.encoder_counts[indexOfEncoder][0] + encoderData.encoder_counts[indexOfEncoder][2]) / 2.0 * 0.0022 + \
-        #        (encoderData.encoder_counts[indexOfEncoder][1] + encoderData.encoder_counts[indexOfEncoder][3]) / 2.0 * 0.0022) / 2.0
         dis = np.mean(encoderData.encoder_counts[indexOfEncoder][:]) * 0.0022
         delta_t = time - pre_encoder_time
         posUpdate = motionModel(dis, delta_t, yaw, particles)
@@ -321,10 +318,11 @@ if __name__ == '__main__':
 
         # update step
         # bestParticleIndex = 0
-        currScanData = scanData.convertFromLaserFrameToBodyFrame3D(scanData.getOneLidarDataAfterMaskByTime(time))
+        currScanData, rangeData = scanData.getOneLidarDataAfterMaskByTime(time)
+        currScanData = scanData.convertFromLaserFrameToBodyFrame3D(currScanData)
         MAP['binaryMap'] = np.zeros(MAP['logMap'].shape)
         MAP['binaryMap'][MAP['logMap'] > 0] = 1
-        particles, weight, bestParticleIndex = update(currScanData, particles,x_range, y_range, weight, MAP)
+        particles, weight, bestParticleIndex = update(currScanData, rangeData, particles,x_range, y_range, weight, MAP)
 
 
         # mapping

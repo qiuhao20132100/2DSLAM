@@ -10,7 +10,7 @@ class IMUData(object):
             # filter the data
             self.yawData = data["angular_velocity"][2]
             order = 1
-            fs = 1000  # sample rate, Hz
+            fs = 100  # sample rate, Hz
             cutoff = 10  # desired cutoff frequency of the filter, Hz
             self.yawData = butter_lowpass_filter(self.yawData, cutoff, fs, order)
 
